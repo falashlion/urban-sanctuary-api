@@ -1,0 +1,41 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/server
+/tmp
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# Environment files
+.env
+.env.prod
+.env.staging
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vendor (if not committing)
+# vendor/
+
+# Air tmp
+tmp/
+
+# Docker volumes
+postgres_data/
+redisdata/

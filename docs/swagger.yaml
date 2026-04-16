@@ -1,0 +1,2600 @@
+openapi: 3.0.3
+info:
+  title: Urban Sanctuary API
+  description: |
+    Premium Apartment Booking Platform — Douala, Cameroon.
+
+    The Urban Sanctuary API powers a modern apartment booking system with:
+    - Multi-method authentication (Email/Password, Phone/OTP, 2FA)
+    - Property listing management with image uploads
+    - Booking engine with conflict prevention & loyalty points
+    - Payment integration (MTN Mobile Money & Orange Money)
+    - Role-based access control (Guest, Homeowner, Admin)
+    - Review & rating system (verified stays only)
+    - Full admin console with audit trail
+
+    ## Authentication
+    All authenticated endpoints require a Bearer token in the `Authorization` header:
+    ```
+    Authorization: Bearer <access_token>
+    ```
+    Access tokens are obtained via `/auth/login` or `/auth/register` and are valid for **15 minutes**.
+    Refresh tokens are stored as HttpOnly cookies and are valid for **7 days**.
+
+    ## Response Envelope
+    All responses follow a standard JSON envelope:
+    ```json
+    {
+      "success": true,
+      "status": 200,
+      "message": "...",
+      "data": { ... },
+      "meta": { "page": 1, "per_page": 20, "total": 100, "total_pages": 5 },
+      "request_id": "uuid"
+    }
+    ```
+
+    ## Rate Limiting
+    - Global: 100 requests/minute per IP
+    - Auth endpoints: 5 requests/minute per IP
+    - Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+  version: 1.0.0
+  contact:
+    name: Urban Sanctuary Team
+    email: support@urbansanctuary.cm
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+  - url: https://api.urbansanctuary.cm/api/v1
+    description: Production
+
+tags:
+  - name: Health
+    description: Service health checks
+  - name: Auth
+    description: Authentication & authorization
+  - name: Users
+    description: User profile management
+  - name: Properties
+    description: Property listing management
+  - name: Bookings
+    description: Booking engine & checkout
+  - name: Payments
+    description: Payment processing (MTN MoMo, Orange Money)
+  - name: Webhooks
+    description: Payment provider callbacks
+  - name: Admin
+    description: Admin console operations
+
+paths:
+  # ──────────────────────────────────────────────
+  # Health
+  # ──────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns the health status of the API and its dependencies (PostgreSQL, Redis).
+      operationId: healthCheck
+      responses:
+        "200":
+          description: All services healthy
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: One or more services degraded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthResponse"
+
+  # ──────────────────────────────────────────────
+  # Auth
+  # ──────────────────────────────────────────────
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      description: Creates a new user account. At least one of `email` or `phone` must be provided.
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      description: |
+        Authenticates a user with email/phone and password.
+        Returns an access token in the response body and a refresh token as an HttpOnly cookie.
+
+        **Account lockout:** After 5 failed attempts, the account is locked for 15 minutes.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          headers:
+            Set-Cookie:
+              description: HttpOnly refresh token cookie
+              schema:
+                type: string
+                example: "refresh_token=abc123; Path=/api/v1/auth; HttpOnly; Max-Age=604800"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: |
+        Rotates the refresh token and issues a new access token.
+        The refresh token can be sent via HttpOnly cookie (preferred) or in the request body.
+      operationId: refreshToken
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token:
+                  type: string
+                  description: Only needed if not using HttpOnly cookie
+      responses:
+        "200":
+          description: Token refreshed
+          headers:
+            Set-Cookie:
+              description: New HttpOnly refresh token cookie
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AuthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      description: Revokes the refresh token and clears the cookie.
+      operationId: logout
+      responses:
+        "200":
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+
+  /auth/otp/request:
+    post:
+      tags: [Auth]
+      summary: Request OTP
+      description: |
+        Sends a 6-digit OTP code via SMS or email.
+        Codes expire after **5 minutes** and allow a maximum of **3 verification attempts**.
+      operationId: requestOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OTPRequest"
+      responses:
+        "200":
+          description: OTP sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Verify OTP
+      description: Validates a 6-digit OTP code.
+      operationId: verifyOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OTPVerifyRequest"
+      responses:
+        "200":
+          description: OTP verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/2fa/enable:
+    post:
+      tags: [Auth]
+      summary: Enable 2FA
+      description: Initiates TOTP 2FA setup. Returns a secret and QR code URL.
+      operationId: enable2FA
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: 2FA setup initiated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Enable2FAResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/2fa/confirm:
+    post:
+      tags: [Auth]
+      summary: Confirm 2FA
+      description: Confirms TOTP 2FA activation with a 6-digit code from the authenticator app.
+      operationId: confirm2FA
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "200":
+          description: 2FA activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /auth/2fa/verify:
+    post:
+      tags: [Auth]
+      summary: Verify 2FA
+      description: Validates a TOTP 2FA code during login.
+      operationId: verify2FA
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "200":
+          description: 2FA verification successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /auth/password/reset-request:
+    post:
+      tags: [Auth]
+      summary: Request password reset
+      description: Sends a password reset OTP to the user's email or phone.
+      operationId: passwordResetRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+      responses:
+        "200":
+          description: Reset instructions sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+
+  /auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Reset password
+      description: Sets a new password using the reset token.
+      operationId: passwordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirm"
+      responses:
+        "200":
+          description: Password reset successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ──────────────────────────────────────────────
+  # Users
+  # ──────────────────────────────────────────────
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      operationId: getProfile
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Profile retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    patch:
+      tags: [Users]
+      summary: Update current user profile
+      operationId: updateProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileRequest"
+      responses:
+        "200":
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /users/me/password:
+    patch:
+      tags: [Users]
+      summary: Change password
+      operationId: changePassword
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /users/me/bookings:
+    get:
+      tags: [Users]
+      summary: Get current user's bookings
+      operationId: getUserBookings
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, confirmed, cancelled, completed]
+      responses:
+        "200":
+          description: Bookings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/BookingResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /users/me/loyalty:
+    get:
+      tags: [Users]
+      summary: Get loyalty points balance
+      description: |
+        Returns the user's loyalty points balance and XAF equivalent.
+        Each loyalty point = 10 XAF.
+      operationId: getLoyalty
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Loyalty info retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LoyaltyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /users/me/notifications:
+    get:
+      tags: [Users]
+      summary: Get notifications
+      operationId: getNotifications
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+      responses:
+        "200":
+          description: Notifications retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/NotificationResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ──────────────────────────────────────────────
+  # Properties
+  # ──────────────────────────────────────────────
+  /properties:
+    get:
+      tags: [Properties]
+      summary: List properties
+      description: |
+        Returns published properties with support for filtering, searching, sorting, and pagination.
+        Only properties with status `published` are returned to unauthenticated users.
+      operationId: listProperties
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: neighborhood
+          in: query
+          schema:
+            type: string
+            enum: [akwa, bonapriso, bonanjo, kotto, other]
+        - name: min_price
+          in: query
+          schema:
+            type: number
+            format: double
+            minimum: 0
+        - name: max_price
+          in: query
+          schema:
+            type: number
+            format: double
+            minimum: 0
+        - name: bedrooms
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: max_guests
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [created_at, price_per_night]
+            default: created_at
+        - name: sort_order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: search
+          in: query
+          description: Full-text search on title and description
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Properties retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PropertyResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+    post:
+      tags: [Properties]
+      summary: Create a property
+      description: Creates a new property listing in `draft` status. Requires `homeowner` or `admin` role.
+      operationId: createProperty
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePropertyRequest"
+      responses:
+        "201":
+          description: Property created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PropertyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /properties/{id}:
+    get:
+      tags: [Properties]
+      summary: Get property details
+      operationId: getProperty
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Property retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PropertyResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Properties]
+      summary: Update property
+      description: Updates property details. Only the owner or an admin can update.
+      operationId: updateProperty
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePropertyRequest"
+      responses:
+        "200":
+          description: Property updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PropertyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /properties/{id}/availability:
+    get:
+      tags: [Properties]
+      summary: Get availability
+      description: Returns booked (unavailable) date ranges for a property.
+      operationId: getPropertyAvailability
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Availability retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/DateRange"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /properties/{id}/images:
+    post:
+      tags: [Properties]
+      summary: Upload property image
+      description: Uploads an image to a property. Accepts multipart form data. Max 10MB per image.
+      operationId: uploadPropertyImage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: Image file (JPEG, PNG, WebP)
+      responses:
+        "201":
+          description: Image uploaded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PropertyImage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /properties/{id}/images/{imageId}:
+    delete:
+      tags: [Properties]
+      summary: Delete property image
+      operationId: deletePropertyImage
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+        - name: imageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Image deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /properties/{id}/status:
+    patch:
+      tags: [Properties]
+      summary: Update property status
+      description: |
+        Changes the property publication status. Admin only.
+        Valid transitions: `draft` → `published` → `archived`
+      operationId: updatePropertyStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [draft, published, archived]
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ──────────────────────────────────────────────
+  # Bookings
+  # ──────────────────────────────────────────────
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Create a booking
+      description: |
+        Creates a new booking (step 1 of the 3-step checkout flow).
+        Validates:
+        - Property exists and is published
+        - Guest count ≤ max_guests
+        - No date conflicts with existing bookings
+        - Loyalty points balance (if redeeming)
+
+        **Pricing:** `total = (nights × price_per_night) - loyalty_discount`
+        **Loyalty:** Each point = 10 XAF discount
+      operationId: createBooking
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookingRequest"
+      responses:
+        "201":
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BookingResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Booking conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: Get booking details
+      description: Returns booking details. Accessible by the guest, property owner, or admin.
+      operationId: getBooking
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Booking retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BookingResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /bookings/{id}/cancel:
+    post:
+      tags: [Bookings]
+      summary: Cancel a booking
+      description: |
+        Cancels a pending or confirmed booking. Only the guest can cancel.
+        If loyalty points were used, they are refunded to the user's balance.
+      operationId: cancelBooking
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Booking status does not allow cancellation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /bookings/{id}/review:
+    post:
+      tags: [Bookings]
+      summary: Submit a review
+      description: |
+        Submits a review for a completed booking. Only the guest can review.
+        Reviews are automatically marked as verified since they are linked to a real stay.
+        Only one review per booking is allowed.
+      operationId: submitReview
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReviewRequest"
+      responses:
+        "201":
+          description: Review submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ReviewResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  # ──────────────────────────────────────────────
+  # Payments
+  # ──────────────────────────────────────────────
+  /payments/initiate:
+    post:
+      tags: [Payments]
+      summary: Initiate a payment
+      description: |
+        Starts a payment process for a pending booking (step 2 of the checkout flow).
+        Sends a payment request to the selected provider (MTN MoMo or Orange Money).
+        The user will receive a prompt on their phone to confirm the payment.
+      operationId: initiatePayment
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitiatePaymentRequest"
+      responses:
+        "201":
+          description: Payment initiated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PaymentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          description: Payment failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Booking not in pending status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /payments/{id}/status:
+    get:
+      tags: [Payments]
+      summary: Get payment status
+      description: Polls the current status of a payment.
+      operationId: getPaymentStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Payment status retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/PaymentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ──────────────────────────────────────────────
+  # Webhooks
+  # ──────────────────────────────────────────────
+  /webhooks/mtn:
+    post:
+      tags: [Webhooks]
+      summary: MTN MoMo payment callback
+      description: |
+        Receives payment status updates from MTN MoMo.
+        Validates the `X-Callback-Signature` header.
+        On successful payment: booking status → `confirmed`, 100 loyalty points awarded.
+      operationId: mtnWebhook
+      parameters:
+        - name: X-Callback-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookPayload"
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: processed
+
+  /webhooks/orange:
+    post:
+      tags: [Webhooks]
+      summary: Orange Money payment callback
+      description: |
+        Receives payment status updates from Orange Money.
+        Validates the `X-Callback-Signature` header.
+      operationId: orangeWebhook
+      parameters:
+        - name: X-Callback-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookPayload"
+      responses:
+        "200":
+          description: Webhook processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: processed
+
+  # ──────────────────────────────────────────────
+  # Admin
+  # ──────────────────────────────────────────────
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users
+      operationId: adminListUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [guest, homeowner, admin]
+        - name: search
+          in: query
+          description: Search by name or email
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Users retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/UserResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/users/{id}/role:
+    patch:
+      tags: [Admin]
+      summary: Update user role
+      operationId: adminUpdateUserRole
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [guest, homeowner, admin]
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/users/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Activate/deactivate user
+      operationId: adminUpdateUserStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties:
+                is_active:
+                  type: boolean
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/properties:
+    get:
+      tags: [Admin]
+      summary: List all properties (including draft/archived)
+      operationId: adminListProperties
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, published, archived]
+      responses:
+        "200":
+          description: Properties retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PropertyResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/bookings:
+    get:
+      tags: [Admin]
+      summary: List all bookings
+      operationId: adminListBookings
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, confirmed, cancelled, completed]
+      responses:
+        "200":
+          description: Bookings retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/BookingResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/tickets:
+    get:
+      tags: [Admin]
+      summary: List support tickets
+      operationId: adminListTickets
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, in_progress, resolved, closed]
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, urgent]
+      responses:
+        "200":
+          description: Tickets retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TicketResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/tickets/{id}:
+    get:
+      tags: [Admin]
+      summary: Get ticket with messages
+      operationId: adminGetTicket
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      responses:
+        "200":
+          description: Ticket retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TicketResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/tickets/{id}/reply:
+    post:
+      tags: [Admin]
+      summary: Reply to a ticket
+      operationId: adminReplyToTicket
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketReplyRequest"
+      responses:
+        "201":
+          description: Reply sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/tickets/{id}/status:
+    patch:
+      tags: [Admin]
+      summary: Update ticket status
+      operationId: adminUpdateTicketStatus
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, in_progress, resolved, closed]
+      responses:
+        "200":
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/permissions:
+    get:
+      tags: [Admin]
+      summary: Get RBAC permission matrix
+      operationId: adminGetPermissions
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Permissions retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/PermissionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      summary: Update RBAC permission matrix
+      operationId: adminUpdatePermissions
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePermissionsRequest"
+      responses:
+        "200":
+          description: Permissions updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/config:
+    get:
+      tags: [Admin]
+      summary: Get site configuration
+      operationId: adminGetSiteConfig
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Config retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SiteConfigResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/config/{key}:
+    put:
+      tags: [Admin]
+      summary: Update a site config variable
+      operationId: adminUpdateSiteConfig
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          example: loyalty_points_per_booking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSiteConfigRequest"
+      responses:
+        "200":
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Query audit logs
+      operationId: adminGetAuditLogs
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PerPage"
+        - name: user_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: action
+          in: query
+          schema:
+            type: string
+          example: user.login
+        - name: resource_type
+          in: query
+          schema:
+            type: string
+          example: booking
+      responses:
+        "200":
+          description: Audit logs retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/AuditLogResponse"
+                      meta:
+                        $ref: "#/components/schemas/PaginationMeta"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+# ════════════════════════════════════════════════
+# Components
+# ════════════════════════════════════════════════
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token obtained from `/auth/login` or `/auth/register`
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Conflict:
+      description: Resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    # ── Envelopes ──────────────────────────
+    SuccessEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        status:
+          type: integer
+          example: 200
+        message:
+          type: string
+          example: Operation successful
+        data:
+          type: object
+          nullable: true
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        request_id:
+          type: string
+          format: uuid
+      required: [success, status, message, request_id]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        status:
+          type: integer
+          example: 400
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: One or more fields are invalid
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    example: email
+                  message:
+                    type: string
+                    example: must be a valid email address
+        request_id:
+          type: string
+          format: uuid
+
+    PaginationMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+          example: 1
+        per_page:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          format: int64
+          example: 150
+        total_pages:
+          type: integer
+          example: 8
+
+    # ── Auth ───────────────────────────────
+    RegisterRequest:
+      type: object
+      required: [password, first_name, last_name]
+      properties:
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        phone:
+          type: string
+          description: E.164 format
+          example: "+237670000000"
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          example: SecureP@ss123
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: John
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Doe
+
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        email:
+          type: string
+          format: email
+          example: john@example.com
+        phone:
+          type: string
+          example: "+237670000000"
+        password:
+          type: string
+          example: SecureP@ss123
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIs...
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Token TTL in seconds
+          example: 900
+        user:
+          $ref: "#/components/schemas/UserResponse"
+
+    OTPRequest:
+      type: object
+      required: [identifier, purpose]
+      properties:
+        identifier:
+          type: string
+          description: Email address or phone number
+          example: "+237670000000"
+        purpose:
+          type: string
+          enum: [login, registration, password_reset, verification]
+
+    OTPVerifyRequest:
+      type: object
+      required: [identifier, code, purpose]
+      properties:
+        identifier:
+          type: string
+          example: "+237670000000"
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "482910"
+        purpose:
+          type: string
+          enum: [login, registration, password_reset, verification]
+
+    Enable2FAResponse:
+      type: object
+      properties:
+        secret:
+          type: string
+          example: JBSWY3DPEHPK3PXP
+        qr_code_url:
+          type: string
+          example: "otpauth://totp/UrbanSanctuary:john@example.com?secret=JBSWY3DPEHPK3PXP&issuer=UrbanSanctuary"
+
+    TOTPCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "123456"
+
+    PasswordResetRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+
+    PasswordResetConfirm:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
+
+    # ── Users ──────────────────────────────
+    UserResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        first_name:
+          type: string
+          example: John
+        last_name:
+          type: string
+          example: Doe
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        role:
+          type: string
+          enum: [guest, homeowner, admin]
+        is_verified:
+          type: boolean
+        totp_enabled:
+          type: boolean
+        loyalty_points:
+          type: integer
+          example: 500
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        avatar_url:
+          type: string
+          format: uri
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        totp_code:
+          type: string
+          description: Required if 2FA is enabled
+          minLength: 6
+          maxLength: 6
+
+    LoyaltyResponse:
+      type: object
+      properties:
+        balance:
+          type: integer
+          example: 500
+        points_value_xaf:
+          type: number
+          format: double
+          description: XAF equivalent (1 point = 10 XAF)
+          example: 5000.0
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              booking_id:
+                type: string
+                format: uuid
+              type:
+                type: string
+                enum: [earned, redeemed]
+              points:
+                type: integer
+              date:
+                type: string
+                format: date-time
+
+    NotificationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          example: booking_confirmed
+        channel:
+          type: string
+          enum: [email, sms, push]
+        title:
+          type: string
+        content:
+          type: string
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Properties ─────────────────────────
+    CreatePropertyRequest:
+      type: object
+      required: [title, description, neighborhood, address, price_per_night, bedrooms, bathrooms, max_guests]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Luxury Studio in Bonapriso
+        description:
+          type: string
+          minLength: 10
+          example: A beautifully furnished studio apartment in the heart of Bonapriso with modern amenities.
+        neighborhood:
+          type: string
+          enum: [akwa, bonapriso, bonanjo, kotto, other]
+          example: bonapriso
+        address:
+          type: string
+          example: 45 Rue de la Joie, Bonapriso
+        latitude:
+          type: number
+          format: double
+          example: 4.0483
+        longitude:
+          type: number
+          format: double
+          example: 9.6959
+        price_per_night:
+          type: number
+          format: double
+          minimum: 0
+          example: 25000
+        bedrooms:
+          type: integer
+          minimum: 1
+          example: 1
+        bathrooms:
+          type: integer
+          minimum: 1
+          example: 1
+        max_guests:
+          type: integer
+          minimum: 1
+          example: 2
+        amenities:
+          type: array
+          items:
+            type: string
+          example: [wifi, air_conditioning, parking, pool]
+
+    UpdatePropertyRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          minLength: 10
+        neighborhood:
+          type: string
+          enum: [akwa, bonapriso, bonanjo, kotto, other]
+        address:
+          type: string
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        price_per_night:
+          type: number
+          format: double
+          minimum: 0
+        bedrooms:
+          type: integer
+          minimum: 1
+        bathrooms:
+          type: integer
+          minimum: 1
+        max_guests:
+          type: integer
+          minimum: 1
+        amenities:
+          type: array
+          items:
+            type: string
+
+    PropertyResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        owner_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: Luxury Studio in Bonapriso
+        description:
+          type: string
+        neighborhood:
+          type: string
+          enum: [akwa, bonapriso, bonanjo, kotto, other]
+        address:
+          type: string
+        latitude:
+          type: number
+          format: double
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          nullable: true
+        price_per_night:
+          type: number
+          format: double
+          example: 25000
+        bedrooms:
+          type: integer
+          example: 1
+        bathrooms:
+          type: integer
+          example: 1
+        max_guests:
+          type: integer
+          example: 2
+        amenities:
+          type: array
+          items:
+            type: string
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/PropertyImage"
+        status:
+          type: string
+          enum: [draft, published, archived]
+        average_rating:
+          type: number
+          format: double
+          nullable: true
+          example: 4.5
+        review_count:
+          type: integer
+          nullable: true
+          example: 12
+        owner:
+          $ref: "#/components/schemas/UserResponse"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PropertyImage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+
+    DateRange:
+      type: object
+      properties:
+        check_in:
+          type: string
+          format: date
+          example: "2025-06-15"
+        check_out:
+          type: string
+          format: date
+          example: "2025-06-20"
+
+    # ── Bookings ───────────────────────────
+    CreateBookingRequest:
+      type: object
+      required: [property_id, check_in, check_out, guests_count]
+      properties:
+        property_id:
+          type: string
+          format: uuid
+        check_in:
+          type: string
+          format: date
+          description: "Format: YYYY-MM-DD"
+          example: "2025-06-15"
+        check_out:
+          type: string
+          format: date
+          description: "Format: YYYY-MM-DD"
+          example: "2025-06-20"
+        guests_count:
+          type: integer
+          minimum: 1
+          example: 2
+        use_loyalty_points:
+          type: integer
+          minimum: 0
+          description: Number of loyalty points to redeem (1 point = 10 XAF discount)
+          example: 0
+
+    BookingResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        property_id:
+          type: string
+          format: uuid
+        guest_id:
+          type: string
+          format: uuid
+        check_in:
+          type: string
+          format: date
+        check_out:
+          type: string
+          format: date
+        nights:
+          type: integer
+          example: 5
+        guests_count:
+          type: integer
+          example: 2
+        base_amount:
+          type: number
+          format: double
+          description: nights × price_per_night
+          example: 125000
+        discount_amount:
+          type: number
+          format: double
+          description: Loyalty points discount in XAF
+          example: 0
+        total_amount:
+          type: number
+          format: double
+          description: base_amount - discount_amount
+          example: 125000
+        status:
+          type: string
+          enum: [pending, confirmed, cancelled, completed]
+        loyalty_points_earned:
+          type: integer
+          description: Points awarded on completion (100 per booking)
+          example: 100
+        loyalty_points_used:
+          type: integer
+          description: Points redeemed for discount
+          example: 0
+        property:
+          $ref: "#/components/schemas/PropertyResponse"
+        guest:
+          $ref: "#/components/schemas/UserResponse"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateReviewRequest:
+      type: object
+      required: [rating]
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
+        comment:
+          type: string
+          maxLength: 2000
+          example: Amazing apartment, great location!
+
+    ReviewResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        booking_id:
+          type: string
+          format: uuid
+        property_id:
+          type: string
+          format: uuid
+        guest_id:
+          type: string
+          format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+        is_verified:
+          type: boolean
+          description: Always true (linked to a real stay)
+        guest:
+          $ref: "#/components/schemas/UserResponse"
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Payments ───────────────────────────
+    InitiatePaymentRequest:
+      type: object
+      required: [booking_id, provider, phone_number]
+      properties:
+        booking_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [mtn_momo, orange_money]
+          description: Payment provider
+          example: mtn_momo
+        phone_number:
+          type: string
+          description: Phone number linked to the mobile money account
+          example: "+237670000000"
+
+    PaymentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        booking_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [mtn_momo, orange_money]
+        provider_reference:
+          type: string
+          nullable: true
+          description: External transaction ID from the payment provider
+        phone_number:
+          type: string
+        amount:
+          type: number
+          format: double
+          example: 125000
+        currency:
+          type: string
+          example: XAF
+        status:
+          type: string
+          enum: [initiated, pending, completed, failed, refunded]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookPayload:
+      type: object
+      description: Raw webhook payload from payment provider (structure varies)
+      properties:
+        externalId:
+          type: string
+          description: Our payment ID
+        status:
+          type: string
+          description: "SUCCESSFUL, FAILED, or PENDING"
+        financialTransactionId:
+          type: string
+          description: Provider's transaction reference
+
+    # ── Admin ──────────────────────────────
+    TicketResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        subject:
+          type: string
+          example: Issue with my booking
+        status:
+          type: string
+          enum: [open, in_progress, resolved, closed]
+        priority:
+          type: string
+          enum: [low, medium, high, urgent]
+        user:
+          $ref: "#/components/schemas/UserResponse"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/TicketMessageResponse"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TicketMessageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ticket_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        is_internal:
+          type: boolean
+          description: If true, only visible to admins
+        sender:
+          $ref: "#/components/schemas/UserResponse"
+        created_at:
+          type: string
+          format: date-time
+
+    TicketReplyRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          example: We are looking into your issue.
+        is_internal:
+          type: boolean
+          default: false
+          description: If true, message is only visible to admins
+
+    PermissionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [guest, homeowner, admin]
+        module:
+          type: string
+          example: bookings
+        can_read:
+          type: boolean
+        can_write:
+          type: boolean
+        can_delete:
+          type: boolean
+        can_approve:
+          type: boolean
+
+    UpdatePermissionsRequest:
+      type: object
+      required: [permissions]
+      properties:
+        permissions:
+          type: array
+          items:
+            type: object
+            required: [role, module]
+            properties:
+              role:
+                type: string
+                enum: [guest, homeowner, admin]
+              module:
+                type: string
+              can_read:
+                type: boolean
+              can_write:
+                type: boolean
+              can_delete:
+                type: boolean
+              can_approve:
+                type: boolean
+
+    SiteConfigResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        key:
+          type: string
+          example: loyalty_points_per_booking
+        value:
+          type: string
+          example: "100"
+        description:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+
+    UpdateSiteConfigRequest:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+          example: "150"
+        description:
+          type: string
+
+    AuditLogResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        action:
+          type: string
+          example: user.login
+        resource_type:
+          type: string
+          example: user
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+        metadata:
+          type: object
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+          example: 192.168.1.1
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Health ─────────────────────────────
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded]
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [healthy, unhealthy]
+            redis:
+              type: string
+              enum: [healthy, unhealthy]
