@@ -16,7 +16,7 @@ dev: ## Start local infra + air live-reload dev server
 	$(GO) run github.com/cosmtrek/air@latest
 
 run: ## Run server without live reload
-	$(GO) run ./cmd/server
+	$(GO) run ./cmd/api
 
 migrate-up: ## Run pending database migrations
 	migrate -path ./migrations -database "$(DB_DSN)" up
@@ -44,7 +44,7 @@ vet: ## Run go vet
 	$(GO) vet ./...
 
 build: ## Compile production binary
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-w -s" -o ./server ./cmd/server
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-w -s" -o ./server ./cmd/api
 
 docker-build: ## Build Docker image locally
 	docker build -f deployments/Dockerfile -t urban-sanctuary-api:latest .
