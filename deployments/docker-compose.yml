@@ -1,7 +1,7 @@
 version: '3.9'
 services:
   api:
-    image: ghcr.io/falashlion/urban-sanctuary-api:latest
+    image: urban-sanctuary-api:latest
     restart: unless-stopped
     ports:
       - '8000:8000'
