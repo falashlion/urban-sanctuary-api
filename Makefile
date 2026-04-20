@@ -1,4 +1,4 @@
-.PHONY: dev migrate-up migrate-down sqlc test lint build docker-build seed help
+.PHONY: dev migrate-up migrate-down sqlc test lint build docker-build seed copy-env help
 
 # Load .env if present
 ifneq (,$(wildcard ./.env))
@@ -55,6 +55,9 @@ docker-up: ## Start production Docker stack
 
 docker-down: ## Stop production Docker stack
 	$(DOCKER_COMPOSE) -f deployments/docker-compose.yml down
+
+copy-env: ## Copy root .env to deployments folder
+	cp .env deployments/.env
 
 seed: ## Load development seed data
 	$(GO) run ./cmd/seed
