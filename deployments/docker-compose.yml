@@ -10,11 +10,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - APP_PORT=8000
+      - DB_DSN=postgres://${POSTGRES_USER:-us_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-urban_sanctuary}?sslmode=disable
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:8000/api/v1/health']
-      interval: 30s
+      interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
+      start_period: 10s
 
   postgres:
     image: postgres:16-alpine
@@ -54,7 +62,8 @@ services:
       - '80:80'
       - '443:443'
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   certbot:
     image: certbot/certbot:latest
