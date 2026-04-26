@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS permissions (
     CONSTRAINT permissions_unique_role_module UNIQUE (role, module)
 );
 
+DROP TRIGGER IF EXISTS update_permissions_updated_at ON permissions;
 CREATE TRIGGER update_permissions_updated_at
     BEFORE UPDATE ON permissions
     FOR EACH ROW
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS site_config (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+DROP TRIGGER IF EXISTS update_site_config_updated_at ON site_config;
 CREATE TRIGGER update_site_config_updated_at
     BEFORE UPDATE ON site_config
     FOR EACH ROW

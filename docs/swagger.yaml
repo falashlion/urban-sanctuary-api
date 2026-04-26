@@ -46,9 +46,7 @@ info:
     name: MIT
 
 servers:
-  - url: http://localhost:8000/api/v1
-    description: Local development
-  - url: https://api.urbansanctuary.cm/api/v1
+  - url: http://sanaps.mooo.com/api/v1
     description: Production
 
 tags:

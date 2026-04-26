@@ -17,6 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_reviews_property_id ON reviews(property_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_guest_id ON reviews(guest_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_rating ON reviews(rating);
 
+DROP TRIGGER IF EXISTS update_reviews_updated_at ON reviews;
 CREATE TRIGGER update_reviews_updated_at
     BEFORE UPDATE ON reviews
     FOR EACH ROW

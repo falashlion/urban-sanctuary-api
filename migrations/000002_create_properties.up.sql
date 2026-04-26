@@ -46,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_properties_neighborhood ON properties(neighborhoo
 CREATE INDEX IF NOT EXISTS idx_properties_price ON properties(price_per_night);
 CREATE INDEX IF NOT EXISTS idx_properties_created_at ON properties(created_at DESC);
 
+DROP TRIGGER IF EXISTS update_properties_updated_at ON properties;
 CREATE TRIGGER update_properties_updated_at
     BEFORE UPDATE ON properties
     FOR EACH ROW

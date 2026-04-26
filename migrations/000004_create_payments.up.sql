@@ -37,6 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 CREATE INDEX IF NOT EXISTS idx_payments_provider_ref ON payments(provider_reference) WHERE provider_reference IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments(created_at DESC);
 
+DROP TRIGGER IF EXISTS update_payments_updated_at ON payments;
 CREATE TRIGGER update_payments_updated_at
     BEFORE UPDATE ON payments
     FOR EACH ROW

@@ -41,6 +41,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_no_overlap
     ON bookings (property_id, check_in, check_out)
     WHERE status IN ('pending', 'confirmed');
 
+DROP TRIGGER IF EXISTS update_bookings_updated_at ON bookings;
 CREATE TRIGGER update_bookings_updated_at
     BEFORE UPDATE ON bookings
     FOR EACH ROW
